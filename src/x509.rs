@@ -10,18 +10,37 @@ use rustls_pemfile::{read_one, Item};
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 use rsa::{pkcs1::LineEnding, pkcs8::EncodePrivateKey, RsaPrivateKey};
 
+/// Generates a X509 certificate pair.
+/// ref. <https://pkg.go.dev/github.com/ava-labs/avalanchego/staking#NewCertAndKeyBytes>
+///
+/// See https://github.com/ava-labs/avalanche-types/blob/ad1730ed193cf1cd5056f23d130c3defc897cab5/avalanche-types/src/cert.rs
+/// to use "openssl" crate.
+pub fn generate(params: Option<CertificateParams>) -> io::Result<Certificate> {
+    let cert_params = if let Some(p) = params {
+        p
+    } else {
+        default_params()?
+    };
+    Certificate::from_params(cert_params).map_err(|e| {
+        Error::new(
+            ErrorKind::Other,
+            format!("failed to generate certificate {}", e),
+        )
+    })
+}
+
 /// Generates a X509 certificate pair and writes them as PEM files.
 /// ref. <https://pkg.go.dev/github.com/ava-labs/avalanchego/staking#NewCertAndKeyBytes>
 ///
 /// See https://github.com/ava-labs/avalanche-types/blob/ad1730ed193cf1cd5056f23d130c3defc897cab5/avalanche-types/src/cert.rs
 /// to use "openssl" crate.
-pub fn generate_default_pem(
+pub fn generate_and_write_pem(
     params: Option<CertificateParams>,
     key_path: &str,
     cert_path: &str,
 ) -> io::Result<()> {
     log::info!(
-        "generating certs with key path '{key_path}' and cert path '{cert_path}' (PEM format)"
+        "generating cert with key path '{key_path}' and cert path '{cert_path}' (PEM format)"
     );
     if Path::new(key_path).exists() {
         return Err(Error::new(
@@ -36,20 +55,11 @@ pub fn generate_default_pem(
         ));
     }
 
-    let cert_params = if let Some(p) = params {
-        p
-    } else {
-        default_params()?
-    };
-    let cert = Certificate::from_params(cert_params).map_err(|e| {
-        Error::new(
-            ErrorKind::Other,
-            format!("failed to generate certificate {}", e),
-        )
-    })?;
+    let cert = generate(params)?;
     let cert_contents = cert
         .serialize_pem()
         .map_err(|e| Error::new(ErrorKind::Other, format!("failed to serialize_pem {}", e)))?;
+
     // ref. "crypto/tls.parsePrivateKey"
     // ref. "crypto/x509.MarshalPKCS8PrivateKey"
     let key_contents = cert.serialize_private_key_pem();
@@ -168,9 +178,9 @@ pub fn default_params() -> io::Result<CertificateParams> {
     Ok(cert_params)
 }
 
-/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_default_pem --exact --show-output
+/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_pem --exact --show-output
 #[test]
-fn test_default_pem() {
+fn test_pem() {
     use std::process::{Command, Stdio};
 
     let _ = env_logger::builder()
@@ -191,7 +201,7 @@ fn test_default_pem() {
     cert_path.push_str(".cert");
     let cert_path = random_manager::tmp_path(10, Some(".pem")).unwrap();
 
-    generate_default_pem(None, &key_path, &cert_path).unwrap();
+    generate_and_write_pem(None, &key_path, &cert_path).unwrap();
     load_pem(&key_path, &cert_path).unwrap();
 
     let key_contents = fs::read(&key_path).unwrap();
@@ -333,11 +343,11 @@ pub fn load_pem_to_der(
 
 /// Loads the PEM-encoded certificate as DER.
 pub fn load_pem_cert_to_der(cert_path: &str) -> io::Result<rustls::Certificate> {
-    log::info!("loading PEM cert {} (to DER)", cert_path);
+    log::info!("loading PEM cert '{cert_path}' (to DER)");
     if !Path::new(cert_path).exists() {
         return Err(Error::new(
             ErrorKind::NotFound,
-            format!("cert path {} does not exists", cert_path),
+            format!("cert path '{cert_path}' does not exists"),
         ));
     }
 
@@ -348,7 +358,7 @@ pub fn load_pem_cert_to_der(cert_path: &str) -> io::Result<rustls::Certificate> 
         match pem_read.unwrap() {
             Item::X509Certificate(cert) => Some(cert),
             Item::RSAKey(_) | Item::PKCS8Key(_) | Item::ECKey(_) => {
-                log::warn!("cert path {} has unexpected private key", cert_path);
+                log::warn!("cert path '{cert_path}' has unexpected private key");
                 None
             }
             _ => None,
@@ -357,7 +367,7 @@ pub fn load_pem_cert_to_der(cert_path: &str) -> io::Result<rustls::Certificate> 
     if cert.is_none() {
         return Err(Error::new(
             ErrorKind::NotFound,
-            format!("cert path {} found no cert", cert_path),
+            format!("cert path '{cert_path}' found no cert"),
         ));
     }
     let cert_der = cert.unwrap();
@@ -367,7 +377,7 @@ pub fn load_pem_cert_to_der(cert_path: &str) -> io::Result<rustls::Certificate> 
 
 /// Generates a X509 certificate pair and returns them in DER format.
 /// ref. <https://pkg.go.dev/github.com/ava-labs/avalanchego/staking#NewCertAndKeyBytes>
-pub fn generate_default_der(
+pub fn generate_der(
     params: Option<CertificateParams>,
 ) -> io::Result<(rustls::PrivateKey, rustls::Certificate)> {
     log::info!("generating key and cert (DER format)");
@@ -407,15 +417,15 @@ pub fn load_der(
     Ok((rustls::PrivateKey(key), rustls::Certificate(cert)))
 }
 
-/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_generate_default_der --exact --show-output
+/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_generate_der --exact --show-output
 #[test]
-fn test_generate_default_der() {
+fn test_generate_der() {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .is_test(true)
         .try_init();
 
-    let (key, cert) = generate_default_der(None).unwrap();
+    let (key, cert) = generate_der(None).unwrap();
     log::info!("key: {} bytes", key.0.len());
     log::info!("cert: {} bytes", cert.0.len());
 }

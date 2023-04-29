@@ -15,7 +15,7 @@ fn main() {
     let key_path = random_manager::tmp_path(10, Some(".key")).unwrap();
     let cert_path = random_manager::tmp_path(10, Some(".pem")).unwrap();
 
-    x509::generate_default_pem(None, &key_path, &cert_path).unwrap();
+    x509::generate_and_write_pem(None, &key_path, &cert_path).unwrap();
     x509::load_pem(&key_path, &cert_path).unwrap();
 
     let key_contents = fs::read(&key_path).unwrap();
