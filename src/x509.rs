@@ -117,6 +117,7 @@ impl Ca {
             random_manager::tmp_path(10, Some(".csr.pem"))?
         };
 
+        log::info!("saving the issued certificate in '{cert_path}'");
         let cert_contents = issued_cert.as_bytes();
         let mut csr_file = File::create(&cert_path)?;
         csr_file.write_all(cert_contents)?;
