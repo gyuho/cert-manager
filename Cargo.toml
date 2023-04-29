@@ -23,4 +23,4 @@ random-manager = "0.0.5" # https://crates.io/crates/random-manager/versions
 tempfile = "3.5.0"
 
 [package.metadata.cargo-udeps.ignore]
-normal = []
+normal = ["rsa"]
