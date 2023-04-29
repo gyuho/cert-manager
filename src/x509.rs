@@ -74,7 +74,7 @@ impl Ca {
         cert_file.write_all(cert_contents.as_bytes())?;
         log::info!("saved cert '{cert_path}' ({}-byte)", cert_contents.len());
 
-        Ok((key_path.to_string(), cert_path.to_string()))
+        Ok((key_path, cert_path))
     }
 
     /// Issues a certificate in PEM format.
@@ -141,6 +141,81 @@ impl CsrEntity {
         let (cert, csr_pem) = generate_csr(cert_params)?;
         Ok(Self { cert, csr_pem })
     }
+
+    /// Saves the CSR, and returns the file path.
+    pub fn save(
+        &self,
+        overwrite: bool,
+        csr_key_path: Option<&str>,
+        csr_cert_path: Option<&str>,
+        csr_path: Option<&str>,
+    ) -> io::Result<(String, String, String)> {
+        let csr_key_path = if let Some(p) = csr_key_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("CSR key path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".key"))?
+        };
+
+        let csr_cert_path = if let Some(p) = csr_cert_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("CSR cert path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".cert"))?
+        };
+
+        let csr_path = if let Some(p) = csr_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("CSR path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".csr.pem"))?
+        };
+
+        // ref. "crypto/tls.parsePrivateKey"
+        // ref. "crypto/x509.MarshalPKCS8PrivateKey"
+        let csr_key_contents = self.cert.serialize_private_key_pem();
+        let mut key_file = File::create(&csr_key_path)?;
+        key_file.write_all(csr_key_contents.as_bytes())?;
+        log::info!(
+            "saved key '{csr_key_path}' ({}-byte)",
+            csr_key_contents.len()
+        );
+
+        let csr_cert_contents = self
+            .cert
+            .serialize_pem()
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to serialize_pem {}", e)))?;
+        let mut cert_file = File::create(&csr_cert_path)?;
+        cert_file.write_all(csr_cert_contents.as_bytes())?;
+        log::info!(
+            "saved cert '{csr_cert_path}' ({}-byte)",
+            csr_cert_contents.len()
+        );
+
+        // ref. "crypto/tls.parsePrivateKey"
+        // ref. "crypto/x509.MarshalPKCS8PrivateKey"
+        let csr_contents = self.csr_pem.as_bytes();
+        let mut csr_file = File::create(&csr_path)?;
+        csr_file.write_all(csr_contents)?;
+        log::info!("saved CSR '{csr_path}' ({}-byte)", csr_contents.len());
+
+        Ok((csr_key_path, csr_cert_path, csr_path))
+    }
 }
 
 /// RUST_LOG=debug cargo test --all-features --lib -- x509::test_csr --exact --show-output
@@ -155,13 +230,12 @@ fn test_csr() {
 
     let ca = Ca::new("ca.hello.com").unwrap();
     let (ca_key_path, ca_cert_path) = ca.save_pem(true, None, None).unwrap();
-
     let openssl_args = vec![
         "x509".to_string(),
-        "-in".to_string(),
-        ca_cert_path.to_string(),
         "-text".to_string(),
         "-noout".to_string(),
+        "-in".to_string(),
+        ca_cert_path.to_string(),
     ];
     let openssl_cmd = Command::new("openssl")
         .stderr(Stdio::inherit())
@@ -169,12 +243,13 @@ fn test_csr() {
         .args(openssl_args)
         .spawn()
         .unwrap();
-    log::info!("ran openssl with PID {}", openssl_cmd.id());
+    log::info!("ran openssl x509 with PID {}", openssl_cmd.id());
     let res = openssl_cmd.wait_with_output();
     match res {
         Ok(output) => {
-            log::info!(
-                "openssl output:\n{}\n",
+            println!(
+                "openssl output {} bytes:\n{}\n",
+                output.stdout.len(),
                 String::from_utf8(output.stdout).unwrap()
             )
         }
@@ -185,19 +260,82 @@ fn test_csr() {
 
     let csr_entity = CsrEntity::new("entity.hello.com").unwrap();
     log::info!("csr_entity.csr:\n\n{}", csr_entity.csr_pem);
+    let (csr_key_path, csr_cert_path, csr_path) = csr_entity.save(true, None, None, None).unwrap();
+    log::info!("csr_key_path: {csr_key_path}");
+    log::info!("csr_cert_path: {csr_cert_path}");
+    log::info!("csr_path: {csr_path}");
+    let openssl_args = vec![
+        "x509".to_string(),
+        "-text".to_string(),
+        "-noout".to_string(),
+        "-in".to_string(),
+        csr_cert_path.to_string(),
+    ];
+    let openssl_cmd = Command::new("openssl")
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .args(openssl_args)
+        .spawn()
+        .unwrap();
+    log::info!("ran openssl x509 with PID {}", openssl_cmd.id());
+    let res = openssl_cmd.wait_with_output();
+    match res {
+        Ok(output) => {
+            println!(
+                "openssl output {} bytes:\n{}\n",
+                output.stdout.len(),
+                String::from_utf8(output.stdout).unwrap()
+            )
+        }
+        Err(e) => {
+            log::warn!("failed to run openssl {}", e)
+        }
+    }
 
     let issued_cert = ca.issue_cert_pem(&csr_entity.csr_pem).unwrap();
     log::info!("issued_cert:\n\n{issued_cert}");
 
-    let (issued_cert, cert_path) = ca
+    let (issued_cert, issued_cert_path) = ca
         .issue_and_save_cert_pem(&csr_entity.csr_pem, true, None)
         .unwrap();
     log::info!("issued_cert:\n\n{issued_cert}");
-    log::info!("issued_cert cert_path: {cert_path}");
+    log::info!("issued_cert issued_cert_path: {issued_cert_path}");
+    let openssl_args = vec![
+        "x509".to_string(),
+        "-text".to_string(),
+        "-noout".to_string(),
+        "-in".to_string(),
+        issued_cert_path.to_string(),
+    ];
+    let openssl_cmd = Command::new("openssl")
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .args(openssl_args)
+        .spawn()
+        .unwrap();
+    log::info!("ran openssl x509 with PID {}", openssl_cmd.id());
+    let res = openssl_cmd.wait_with_output();
+    match res {
+        Ok(output) => {
+            println!(
+                "openssl output {} bytes:\n{}\n",
+                output.stdout.len(),
+                String::from_utf8(output.stdout).unwrap()
+            )
+        }
+        Err(e) => {
+            log::warn!("failed to run openssl {}", e)
+        }
+    }
 
     fs::remove_file(&ca_key_path).unwrap();
     fs::remove_file(&ca_cert_path).unwrap();
-    fs::remove_file(&cert_path).unwrap();
+
+    fs::remove_file(&csr_key_path).unwrap();
+    fs::remove_file(&csr_cert_path).unwrap();
+    fs::remove_file(&csr_path).unwrap();
+
+    fs::remove_file(&issued_cert_path).unwrap();
 }
 
 /// Generates a X509 certificate pair.
