@@ -14,22 +14,189 @@ use rustls_pemfile::{read_one, Item};
 use rsa::{pkcs1::LineEnding, pkcs8::EncodePrivateKey, RsaPrivateKey};
 
 /// Represents a certificate authoriry.
+/// CA acts as a trusted third party.
+/// ref. <https://en.wikipedia.org/wiki/Certificate_authority>
 /// ref. <https://github.com/djc/sign-cert-remote/blob/main/src/main.rs>
 pub struct Ca {
-    cert: Certificate,
+    pub cert: Certificate,
 }
 
 impl Ca {
-    pub fn new(common_name: &str) -> Self {
-        let cert_params = default_params(Some(common_name.to_string()), true).unwrap();
-        let cert = generate(Some(cert_params)).unwrap();
-        Self { cert }
+    pub fn new(common_name: &str) -> io::Result<Self> {
+        let cert_params = default_params(Some(common_name.to_string()), true)?;
+        let cert = generate(Some(cert_params))?;
+        Ok(Self { cert })
     }
 
-    pub fn create_cert(&self, csr_pem: &str) -> String {
-        let csr = CertificateSigningRequest::from_pem(csr_pem).unwrap();
-        csr.serialize_pem_with_signer(&self.cert).unwrap()
+    /// Saves the certificate in PEM format.
+    pub fn save_pem(
+        &self,
+        overwrite: bool,
+        key_path: Option<&str>,
+        cert_path: Option<&str>,
+    ) -> io::Result<(String, String)> {
+        let key_path = if let Some(p) = key_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("key path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".key"))?
+        };
+
+        let cert_path = if let Some(p) = cert_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("cert path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".cert"))?
+        };
+
+        // ref. "crypto/tls.parsePrivateKey"
+        // ref. "crypto/x509.MarshalPKCS8PrivateKey"
+        let key_contents = self.cert.serialize_private_key_pem();
+        let mut key_file = File::create(&key_path)?;
+        key_file.write_all(key_contents.as_bytes())?;
+        log::info!("saved key '{key_path}' ({}-byte)", key_contents.len());
+
+        let cert_contents = self
+            .cert
+            .serialize_pem()
+            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to serialize_pem {}", e)))?;
+        let mut cert_file = File::create(&cert_path)?;
+        cert_file.write_all(cert_contents.as_bytes())?;
+        log::info!("saved cert '{cert_path}' ({}-byte)", cert_contents.len());
+
+        Ok((key_path.to_string(), cert_path.to_string()))
     }
+
+    /// Issues a certificate in PEM format.
+    /// And returns the issued certificate in PEM format.
+    pub fn issue_cert_pem(&self, csr_pem: &str) -> io::Result<String> {
+        log::info!("issuing a cert for CSR");
+        let csr = CertificateSigningRequest::from_pem(csr_pem).map_err(|e| {
+            Error::new(
+                ErrorKind::Other,
+                format!("failed CertificateSigningRequest::from_pem {}", e),
+            )
+        })?;
+        csr.serialize_pem_with_signer(&self.cert).map_err(|e| {
+            Error::new(
+                ErrorKind::Other,
+                format!("failed serialize_pem_with_signer {}", e),
+            )
+        })
+    }
+
+    /// Issues and saves a certificate in PEM format.
+    /// And returns the issued cert in PEM format, and the saved cert file path.
+    pub fn issue_and_save_cert_pem(
+        &self,
+        csr_pem: &str,
+        overwrite: bool,
+        cert_path: Option<&str>,
+    ) -> io::Result<(String, String)> {
+        let issued_cert = self.issue_cert_pem(csr_pem)?;
+
+        let cert_path = if let Some(p) = cert_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("CSR path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".csr.pem"))?
+        };
+
+        let cert_contents = issued_cert.as_bytes();
+        let mut csr_file = File::create(&cert_path)?;
+        csr_file.write_all(cert_contents)?;
+        log::info!("saved cert '{cert_path}' ({}-byte)", cert_contents.len());
+
+        Ok((issued_cert, cert_path))
+    }
+}
+
+/// Represents a certificate signing request entity.
+/// ref. <https://en.wikipedia.org/wiki/Certificate_signing_request>
+/// ref. <https://github.com/djc/sign-cert-remote/blob/main/src/main.rs>
+pub struct CsrEntity {
+    pub cert: Certificate,
+    pub csr_pem: String,
+}
+
+impl CsrEntity {
+    pub fn new(common_name: &str) -> io::Result<Self> {
+        let cert_params = default_params(Some(common_name.to_string()), false)?;
+        let (cert, csr_pem) = generate_csr(cert_params)?;
+        Ok(Self { cert, csr_pem })
+    }
+}
+
+/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_csr --exact --show-output
+#[test]
+fn test_csr() {
+    use std::process::{Command, Stdio};
+
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .is_test(true)
+        .try_init();
+
+    let ca = Ca::new("ca.hello.com").unwrap();
+    let (ca_key_path, ca_cert_path) = ca.save_pem(true, None, None).unwrap();
+
+    let openssl_args = vec![
+        "x509".to_string(),
+        "-in".to_string(),
+        ca_cert_path.to_string(),
+        "-text".to_string(),
+        "-noout".to_string(),
+    ];
+    let openssl_cmd = Command::new("openssl")
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .args(openssl_args)
+        .spawn()
+        .unwrap();
+    log::info!("ran openssl with PID {}", openssl_cmd.id());
+    let res = openssl_cmd.wait_with_output();
+    match res {
+        Ok(output) => {
+            log::info!(
+                "openssl output:\n{}\n",
+                String::from_utf8(output.stdout).unwrap()
+            )
+        }
+        Err(e) => {
+            log::warn!("failed to run openssl {}", e)
+        }
+    }
+
+    let csr_entity = CsrEntity::new("entity.hello.com").unwrap();
+    log::info!("csr_entity.csr:\n\n{}", csr_entity.csr_pem);
+
+    let issued_cert = ca.issue_cert_pem(&csr_entity.csr_pem).unwrap();
+    log::info!("issued_cert:\n\n{issued_cert}");
+
+    let (issued_cert, cert_path) = ca
+        .issue_and_save_cert_pem(&csr_entity.csr_pem, true, None)
+        .unwrap();
+    log::info!("issued_cert:\n\n{issued_cert}");
+    log::info!("issued_cert cert_path: {cert_path}");
+
+    fs::remove_file(&ca_key_path).unwrap();
+    fs::remove_file(&ca_cert_path).unwrap();
+    fs::remove_file(&cert_path).unwrap();
 }
 
 /// Generates a X509 certificate pair.
@@ -91,21 +258,21 @@ pub fn generate_and_write_pem(
     }
 
     let cert = generate(params)?;
-    let cert_contents = cert
-        .serialize_pem()
-        .map_err(|e| Error::new(ErrorKind::Other, format!("failed to serialize_pem {}", e)))?;
 
     // ref. "crypto/tls.parsePrivateKey"
     // ref. "crypto/x509.MarshalPKCS8PrivateKey"
     let key_contents = cert.serialize_private_key_pem();
+    let mut key_file = File::create(key_path)?;
+    key_file.write_all(key_contents.as_bytes())?;
+    log::info!("saved key '{key_path}' ({}-byte)", key_contents.len());
+
+    let cert_contents = cert
+        .serialize_pem()
+        .map_err(|e| Error::new(ErrorKind::Other, format!("failed to serialize_pem {}", e)))?;
 
     let mut cert_file = File::create(cert_path)?;
     cert_file.write_all(cert_contents.as_bytes())?;
     log::info!("saved cert '{cert_path}' ({}-byte)", cert_contents.len());
-
-    let mut key_file = File::create(key_path)?;
-    key_file.write_all(key_contents.as_bytes())?;
-    log::info!("saved key '{key_path}' ({}-byte)", key_contents.len());
 
     Ok(())
 }
@@ -285,7 +452,7 @@ fn test_pem() {
         .args(openssl_args)
         .spawn()
         .unwrap();
-    log::info!("spawned openssl with PID {}", openssl_cmd.id());
+    log::info!("ran openssl with PID {}", openssl_cmd.id());
     let res = openssl_cmd.wait_with_output();
     match res {
         Ok(output) => {
@@ -304,23 +471,6 @@ fn test_pem() {
     log::info!("loaded cert: {:?}", cert);
     fs::remove_file(&key_path).unwrap();
     fs::remove_file(&cert_path).unwrap();
-}
-
-/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_csr --exact --show-output
-#[test]
-fn test_csr() {
-    let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .is_test(true)
-        .try_init();
-
-    let (_, csr_pem) =
-        generate_csr(default_params(Some("hello.com".to_string()), false).unwrap()).unwrap();
-    log::info!("csr_pem: {csr_pem}");
-
-    let ca = Ca::new("hello.com");
-    let cert = ca.create_cert(&csr_pem);
-    log::info!("cert: {cert}");
 }
 
 /// Loads the TLS key and certificate from the PEM-encoded files, as DER.
