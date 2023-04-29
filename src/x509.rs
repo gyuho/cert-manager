@@ -90,7 +90,7 @@ pub fn load_pem(key_path: &str, cert_path: &str) -> io::Result<(Vec<u8>, Vec<u8>
 
 /// Creates default certificate parameters.
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
-pub fn create_default_params() -> io::Result<CertificateParams> {
+pub fn default_params() -> io::Result<CertificateParams> {
     let mut cert_params = CertificateParams::default();
 
     // this fails peer IP verification (e.g., incorrect signature)
