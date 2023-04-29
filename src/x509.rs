@@ -142,6 +142,11 @@ impl CsrEntity {
         Ok(Self { cert, csr_pem })
     }
 
+    pub fn new_with_parameters(cert_params: CertificateParams) -> io::Result<Self> {
+        let (cert, csr_pem) = generate_csr(cert_params)?;
+        Ok(Self { cert, csr_pem })
+    }
+
     /// Saves the CSR, and returns the file path.
     pub fn save(
         &self,
