@@ -4,11 +4,33 @@ use std::{
     path::Path,
 };
 
-use rcgen::{date_time_ymd, Certificate, CertificateParams, DistinguishedName, DnType, KeyPair};
+use rcgen::{
+    date_time_ymd, BasicConstraints, Certificate, CertificateParams, CertificateSigningRequest,
+    DistinguishedName, DnType, IsCa, KeyPair,
+};
 use rustls_pemfile::{read_one, Item};
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 use rsa::{pkcs1::LineEnding, pkcs8::EncodePrivateKey, RsaPrivateKey};
+
+/// Represents a certificate authoriry.
+/// ref. <https://github.com/djc/sign-cert-remote/blob/main/src/main.rs>
+pub struct Ca {
+    cert: Certificate,
+}
+
+impl Ca {
+    pub fn new(common_name: &str) -> Self {
+        let cert_params = default_params(Some(common_name.to_string()), true).unwrap();
+        let cert = generate(Some(cert_params)).unwrap();
+        Self { cert }
+    }
+
+    pub fn create_cert(&self, csr_pem: &str) -> String {
+        let csr = CertificateSigningRequest::from_pem(csr_pem).unwrap();
+        csr.serialize_pem_with_signer(&self.cert).unwrap()
+    }
+}
 
 /// Generates a X509 certificate pair.
 /// ref. <https://pkg.go.dev/github.com/ava-labs/avalanchego/staking#NewCertAndKeyBytes>
@@ -19,7 +41,7 @@ pub fn generate(params: Option<CertificateParams>) -> io::Result<Certificate> {
     let cert_params = if let Some(p) = params {
         p
     } else {
-        default_params()?
+        default_params(None, false)?
     };
     Certificate::from_params(cert_params).map_err(|e| {
         Error::new(
@@ -27,6 +49,19 @@ pub fn generate(params: Option<CertificateParams>) -> io::Result<Certificate> {
             format!("failed to generate certificate {}", e),
         )
     })
+}
+
+/// Generates a certificate and returns the certificate and the CSR.
+/// ref. <https://github.com/djc/sign-cert-remote/blob/main/src/main.rs>
+pub fn generate_csr(params: CertificateParams) -> io::Result<(Certificate, String)> {
+    let cert = generate(Some(params))?;
+    let csr = cert.serialize_request_pem().map_err(|e| {
+        Error::new(
+            ErrorKind::Other,
+            format!("failed to serialize_request_pem {}", e),
+        )
+    })?;
+    Ok((cert, csr))
 }
 
 /// Generates a X509 certificate pair and writes them as PEM files.
@@ -100,7 +135,7 @@ pub fn load_pem(key_path: &str, cert_path: &str) -> io::Result<(Vec<u8>, Vec<u8>
 
 /// Creates default certificate parameters.
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
-pub fn default_params() -> io::Result<CertificateParams> {
+pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<CertificateParams> {
     let mut cert_params = CertificateParams::default();
 
     // this fails peer IP verification (e.g., incorrect signature)
@@ -113,6 +148,7 @@ pub fn default_params() -> io::Result<CertificateParams> {
     // TODO: support sha384/512 signatures in avalanchego node
     log::info!("generating PKCS_ECDSA_P256_SHA256 key");
     cert_params.alg = &rcgen::PKCS_ECDSA_P256_SHA256;
+
     let key_pair = KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(|e| {
         Error::new(
             ErrorKind::Other,
@@ -121,7 +157,7 @@ pub fn default_params() -> io::Result<CertificateParams> {
     })?;
     cert_params.key_pair = Some(key_pair);
 
-    cert_params.not_before = date_time_ymd(2023, 4, 25);
+    cert_params.not_before = date_time_ymd(2023, 4, 28);
     cert_params.not_after = date_time_ymd(5000, 1, 1);
     cert_params.distinguished_name = DistinguishedName::new();
     cert_params
@@ -133,9 +169,19 @@ pub fn default_params() -> io::Result<CertificateParams> {
     cert_params
         .distinguished_name
         .push(DnType::OrganizationName, "Test Org");
-    cert_params
-        .distinguished_name
-        .push(DnType::CommonName, "test common name");
+
+    if let Some(cm) = &common_name {
+        cert_params
+            .distinguished_name
+            .push(DnType::CommonName, cm.to_string());
+    } else {
+        cert_params
+            .distinguished_name
+            .push(DnType::CommonName, "test common name");
+    }
+    if is_ca {
+        cert_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    }
 
     Ok(cert_params)
 }
@@ -144,11 +190,12 @@ pub fn default_params() -> io::Result<CertificateParams> {
 /// Use RSA for Apple M*.
 /// ref. <https://github.com/sfackler/rust-native-tls/issues/225>
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-pub fn default_params() -> io::Result<CertificateParams> {
+pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<CertificateParams> {
     let mut cert_params = CertificateParams::default();
 
     log::info!("generating PKCS_RSA_SHA256 key");
     cert_params.alg = &rcgen::PKCS_RSA_SHA256;
+
     let mut rng = rand::thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, 2048)
         .map_err(|e| Error::new(ErrorKind::Other, format!("failed to generate key {}", e)))?;
@@ -159,7 +206,7 @@ pub fn default_params() -> io::Result<CertificateParams> {
         .map_err(|e| Error::new(ErrorKind::Other, format!("failed to create key pair {}", e)))?;
     cert_params.key_pair = Some(key_pair);
 
-    cert_params.not_before = date_time_ymd(2023, 4, 25);
+    cert_params.not_before = date_time_ymd(2023, 4, 28);
     cert_params.not_after = date_time_ymd(5000, 1, 1);
     cert_params.distinguished_name = DistinguishedName::new();
     cert_params
@@ -171,9 +218,19 @@ pub fn default_params() -> io::Result<CertificateParams> {
     cert_params
         .distinguished_name
         .push(DnType::OrganizationName, "Test Org");
-    cert_params
-        .distinguished_name
-        .push(DnType::CommonName, "test common name");
+
+    if let Some(cm) = &common_name {
+        cert_params
+            .distinguished_name
+            .push(DnType::CommonName, cm.to_string());
+    } else {
+        cert_params
+            .distinguished_name
+            .push(DnType::CommonName, "test common name");
+    }
+    if is_ca {
+        cert_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    }
 
     Ok(cert_params)
 }
@@ -245,6 +302,25 @@ fn test_pem() {
     let (key, cert) = load_pem_to_der(&key_path, &cert_path).unwrap();
     log::info!("loaded key: {:?}", key);
     log::info!("loaded cert: {:?}", cert);
+    fs::remove_file(&key_path).unwrap();
+    fs::remove_file(&cert_path).unwrap();
+}
+
+/// RUST_LOG=debug cargo test --all-features --lib -- x509::test_csr --exact --show-output
+#[test]
+fn test_csr() {
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .is_test(true)
+        .try_init();
+
+    let (_, csr_pem) =
+        generate_csr(default_params(Some("hello.com".to_string()), false).unwrap()).unwrap();
+    log::info!("csr_pem: {csr_pem}");
+
+    let ca = Ca::new("hello.com");
+    let cert = ca.create_cert(&csr_pem);
+    log::info!("cert: {cert}");
 }
 
 /// Loads the TLS key and certificate from the PEM-encoded files, as DER.
@@ -312,7 +388,7 @@ pub fn load_pem_to_der(
     if key.is_none() {
         return Err(Error::new(
             ErrorKind::NotFound,
-            format!("key path {} found no key", key_path),
+            format!("key path '{key_path}' found no key"),
         ));
     }
     let key_der = key.unwrap();
@@ -324,7 +400,7 @@ pub fn load_pem_to_der(
         match pem_read.unwrap() {
             Item::X509Certificate(cert) => Some(cert),
             Item::RSAKey(_) | Item::PKCS8Key(_) | Item::ECKey(_) => {
-                log::warn!("cert path {} has unexpected private key", cert_path);
+                log::warn!("cert path '{cert_path}' has unexpected private key");
                 None
             }
             _ => None,
@@ -333,7 +409,7 @@ pub fn load_pem_to_der(
     if cert.is_none() {
         return Err(Error::new(
             ErrorKind::NotFound,
-            format!("cert path {} found no cert", cert_path),
+            format!("cert path '{cert_path}' found no cert"),
         ));
     }
     let cert_der = cert.unwrap();
@@ -385,7 +461,7 @@ pub fn generate_der(
     let cert_params = if let Some(p) = params {
         p
     } else {
-        default_params()?
+        default_params(None, false)?
     };
     let cert = Certificate::from_params(cert_params).map_err(|e| {
         Error::new(
@@ -408,11 +484,7 @@ pub fn load_der(
     key_path: &str,
     cert_path: &str,
 ) -> io::Result<(rustls::PrivateKey, rustls::Certificate)> {
-    log::info!(
-        "loading DER from key path {} and cert {}",
-        key_path,
-        cert_path
-    );
+    log::info!("loading DER from key path '{key_path}' and cert '{cert_path}'");
     let (key, cert) = fs::read(key_path).and_then(|x| Ok((x, fs::read(cert_path)?)))?;
     Ok((rustls::PrivateKey(key), rustls::Certificate(cert)))
 }
