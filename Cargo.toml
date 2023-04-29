@@ -21,3 +21,6 @@ rustls-pemfile = "1.0.2" # https://github.com/rustls/pemfile
 env_logger = "0.10.0"
 random-manager = "0.0.5" # https://crates.io/crates/random-manager/versions
 tempfile = "3.5.0"
+
+[package.metadata.cargo-udeps.ignore]
+normal = []
