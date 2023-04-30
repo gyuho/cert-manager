@@ -28,8 +28,13 @@ impl Ca {
         Ok(Self { cert })
     }
 
+    pub fn new_with_parameters(cert_params: Option<CertificateParams>) -> io::Result<Self> {
+        let cert = generate(cert_params)?;
+        Ok(Self { cert })
+    }
+
     /// Saves the certificate in PEM format.
-    pub fn save_pem(
+    pub fn save(
         &self,
         overwrite: bool,
         key_path: Option<&str>,
@@ -79,7 +84,7 @@ impl Ca {
 
     /// Issues a certificate in PEM format.
     /// And returns the issued certificate in PEM format.
-    pub fn issue_cert_pem(&self, csr_pem: &str) -> io::Result<String> {
+    pub fn issue_cert(&self, csr_pem: &str) -> io::Result<String> {
         log::info!("issuing a cert for CSR");
         let csr = CertificateSigningRequest::from_pem(csr_pem).map_err(|e| {
             Error::new(
@@ -97,14 +102,12 @@ impl Ca {
 
     /// Issues and saves a certificate in PEM format.
     /// And returns the issued cert in PEM format, and the saved cert file path.
-    pub fn issue_and_save_cert_pem(
+    pub fn issue_and_save_cert(
         &self,
         csr_pem: &str,
         overwrite: bool,
         cert_path: Option<&str>,
     ) -> io::Result<(String, String)> {
-        let issued_cert = self.issue_cert_pem(csr_pem)?;
-
         let cert_path = if let Some(p) = cert_path {
             if !overwrite && Path::new(p).exists() {
                 return Err(Error::new(
@@ -118,10 +121,10 @@ impl Ca {
         };
 
         log::info!("saving the issued certificate in '{cert_path}'");
-        let cert_contents = issued_cert.as_bytes();
-        let mut csr_file = File::create(&cert_path)?;
-        csr_file.write_all(cert_contents)?;
-        log::info!("saved cert '{cert_path}' ({}-byte)", cert_contents.len());
+        let issued_cert = self.issue_cert(csr_pem)?;
+        let mut issued_cert_file = File::create(&cert_path)?;
+        issued_cert_file.write_all(issued_cert.as_bytes())?;
+        log::info!("saved cert '{cert_path}' ({}-byte)", issued_cert.len());
 
         Ok((issued_cert, cert_path))
     }
@@ -147,7 +150,29 @@ impl CsrEntity {
         Ok(Self { cert, csr_pem })
     }
 
-    /// Saves the CSR, and returns the file path.
+    /// Saves the CSR in PEM format, and returns the file path.
+    pub fn save_csr(&self, overwrite: bool, csr_path: Option<&str>) -> io::Result<String> {
+        let csr_path = if let Some(p) = csr_path {
+            if !overwrite && Path::new(p).exists() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("CSR path '{p}' already exists"),
+                ));
+            }
+            p.to_string()
+        } else {
+            random_manager::tmp_path(10, Some(".csr.pem"))?
+        };
+
+        let mut csr_file = File::create(&csr_path)?;
+        csr_file.write_all(self.csr_pem.as_bytes())?;
+        log::info!("saved CSR '{csr_path}' ({}-byte)", self.csr_pem.len());
+
+        Ok(csr_path)
+    }
+
+    /// Saves the key, cert, and CSR, in PEM format.
+    /// And returns the file paths.
     pub fn save(
         &self,
         overwrite: bool,
@@ -194,8 +219,8 @@ impl CsrEntity {
         // ref. "crypto/tls.parsePrivateKey"
         // ref. "crypto/x509.MarshalPKCS8PrivateKey"
         let csr_key_contents = self.cert.serialize_private_key_pem();
-        let mut key_file = File::create(&csr_key_path)?;
-        key_file.write_all(csr_key_contents.as_bytes())?;
+        let mut csr_key_file = File::create(&csr_key_path)?;
+        csr_key_file.write_all(csr_key_contents.as_bytes())?;
         log::info!(
             "saved key '{csr_key_path}' ({}-byte)",
             csr_key_contents.len()
@@ -214,10 +239,9 @@ impl CsrEntity {
 
         // ref. "crypto/tls.parsePrivateKey"
         // ref. "crypto/x509.MarshalPKCS8PrivateKey"
-        let csr_contents = self.csr_pem.as_bytes();
         let mut csr_file = File::create(&csr_path)?;
-        csr_file.write_all(csr_contents)?;
-        log::info!("saved CSR '{csr_path}' ({}-byte)", csr_contents.len());
+        csr_file.write_all(self.csr_pem.as_bytes())?;
+        log::info!("saved CSR '{csr_path}' ({}-byte)", self.csr_pem.len());
 
         Ok((csr_key_path, csr_cert_path, csr_path))
     }
@@ -234,7 +258,7 @@ fn test_csr() {
         .try_init();
 
     let ca = Ca::new("ca.hello.com").unwrap();
-    let (ca_key_path, ca_cert_path) = ca.save_pem(true, None, None).unwrap();
+    let (ca_key_path, ca_cert_path) = ca.save(true, None, None).unwrap();
     let openssl_args = vec![
         "x509".to_string(),
         "-text".to_string(),
@@ -297,11 +321,11 @@ fn test_csr() {
         }
     }
 
-    let issued_cert = ca.issue_cert_pem(&csr_entity.csr_pem).unwrap();
+    let issued_cert = ca.issue_cert(&csr_entity.csr_pem).unwrap();
     log::info!("issued_cert:\n\n{issued_cert}");
 
     let (issued_cert, issued_cert_path) = ca
-        .issue_and_save_cert_pem(&csr_entity.csr_pem, true, None)
+        .issue_and_save_cert(&csr_entity.csr_pem, true, None)
         .unwrap();
     log::info!("issued_cert:\n\n{issued_cert}");
     log::info!("issued_cert issued_cert_path: {issued_cert_path}");
