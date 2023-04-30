@@ -445,8 +445,8 @@ pub fn generate_and_write_pem(
     Ok(())
 }
 
-/// Loads the TLS key and certificate from the PEM-encoded files.
-pub fn load_pem(key_path: &str, cert_path: &str) -> io::Result<(Vec<u8>, Vec<u8>)> {
+/// Loads the key and certificate from the PEM-encoded files.
+pub fn load_pem_to_vec(key_path: &str, cert_path: &str) -> io::Result<(Vec<u8>, Vec<u8>)> {
     log::info!("loading PEM from key path '{key_path}' and cert '{cert_path}' (as PEM)");
 
     if !Path::new(key_path).exists() {
@@ -596,7 +596,7 @@ fn test_pem() {
     let cert_path = random_manager::tmp_path(10, Some(".pem")).unwrap();
 
     generate_and_write_pem(None, &key_path, &cert_path).unwrap();
-    load_pem(&key_path, &cert_path).unwrap();
+    load_pem_to_vec(&key_path, &cert_path).unwrap();
 
     let key_contents = fs::read(&key_path).unwrap();
     let key_contents = String::from_utf8(key_contents.to_vec()).unwrap();
@@ -636,23 +636,23 @@ fn test_pem() {
         }
     }
 
-    let (key, cert) = load_pem_to_der(&key_path, &cert_path).unwrap();
+    let (key, cert) = load_pem_key_cert_to_der(&key_path, &cert_path).unwrap();
     log::info!("loaded key: {:?}", key);
     log::info!("loaded cert: {:?}", cert);
+
+    let serial = load_pem_cert_serial(&cert_path).unwrap();
+    log::info!("serial: {:?}", serial);
+
     fs::remove_file(&key_path).unwrap();
     fs::remove_file(&cert_path).unwrap();
 }
 
 /// Loads the TLS key and certificate from the PEM-encoded files, as DER.
-pub fn load_pem_to_der(
+pub fn load_pem_key_cert_to_der(
     key_path: &str,
     cert_path: &str,
 ) -> io::Result<(rustls::PrivateKey, rustls::Certificate)> {
-    log::info!(
-        "loading PEM from key path {} and cert {} (to DER)",
-        key_path,
-        cert_path
-    );
+    log::info!("loading PEM from key path '{key_path}' and cert '{cert_path}' (to DER)");
     if !Path::new(key_path).exists() {
         return Err(Error::new(
             ErrorKind::NotFound,
@@ -737,6 +737,31 @@ pub fn load_pem_to_der(
     Ok((rustls::PrivateKey(key_der), rustls::Certificate(cert_der)))
 }
 
+/// Loads the serial number from the PEM-encoded certificate.
+pub fn load_pem_cert_serial(cert_path: &str) -> io::Result<Vec<u8>> {
+    log::info!("loading PEM cert '{cert_path}'");
+    if !Path::new(cert_path).exists() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("cert path '{cert_path}' does not exists"),
+        ));
+    }
+
+    let cert_raw = read_vec(cert_path)?;
+
+    let (_, parsed) = x509_parser::pem::parse_x509_pem(&cert_raw)
+        .map_err(|e| Error::new(ErrorKind::Other, format!("failed parse_x509_pem {}", e)))?;
+    let cert = parsed.parse_x509().map_err(|e| {
+        Error::new(
+            ErrorKind::Other,
+            format!("failed parse_x509_certificate {}", e),
+        )
+    })?;
+    let serial = cert.serial.clone();
+
+    Ok(serial.to_bytes_be())
+}
+
 /// Loads the PEM-encoded certificate as DER.
 pub fn load_pem_cert_to_der(cert_path: &str) -> io::Result<rustls::Certificate> {
     log::info!("loading PEM cert '{cert_path}' (to DER)");
@@ -800,7 +825,7 @@ pub fn generate_der(
 }
 
 /// Loads the TLS key and certificate from the DER-encoded files.
-pub fn load_der(
+pub fn load_der_key_cert(
     key_path: &str,
     cert_path: &str,
 ) -> io::Result<(rustls::PrivateKey, rustls::Certificate)> {
