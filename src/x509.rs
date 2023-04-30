@@ -494,6 +494,7 @@ pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<Ce
 
     cert_params.not_before = date_time_ymd(2023, 4, 28);
     cert_params.not_after = date_time_ymd(5000, 1, 1);
+
     cert_params.distinguished_name = DistinguishedName::new();
     cert_params
         .distinguished_name
@@ -504,7 +505,6 @@ pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<Ce
     cert_params
         .distinguished_name
         .push(DnType::OrganizationName, "Test Org");
-
     if let Some(cm) = &common_name {
         cert_params
             .distinguished_name
@@ -514,6 +514,7 @@ pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<Ce
             .distinguished_name
             .push(DnType::CommonName, "test common name");
     }
+
     if is_ca {
         cert_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     }
@@ -543,6 +544,7 @@ pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<Ce
 
     cert_params.not_before = date_time_ymd(2023, 4, 28);
     cert_params.not_after = date_time_ymd(5000, 1, 1);
+
     cert_params.distinguished_name = DistinguishedName::new();
     cert_params
         .distinguished_name
@@ -553,7 +555,6 @@ pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<Ce
     cert_params
         .distinguished_name
         .push(DnType::OrganizationName, "Test Org");
-
     if let Some(cm) = &common_name {
         cert_params
             .distinguished_name
@@ -563,6 +564,7 @@ pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<Ce
             .distinguished_name
             .push(DnType::CommonName, "test common name");
     }
+
     if is_ca {
         cert_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     }
