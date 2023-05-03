@@ -8,10 +8,8 @@ use rcgen::{
     date_time_ymd, BasicConstraints, Certificate, CertificateParams, CertificateSigningRequest,
     DistinguishedName, DnType, IsCa, KeyPair,
 };
-use rustls_pemfile::{read_one, Item};
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 use rsa::{pkcs1::LineEnding, pkcs8::EncodePrivateKey, RsaPrivateKey};
+use rustls_pemfile::{read_one, Item};
 
 /// Represents a certificate authoriry.
 /// CA acts as a trusted third party.
@@ -23,7 +21,7 @@ pub struct Ca {
 
 impl Ca {
     pub fn new(common_name: &str) -> io::Result<Self> {
-        let cert_params = default_params(Some(common_name.to_string()), true)?;
+        let cert_params = default_params(None, Some(common_name.to_string()), true)?;
         let cert = generate(Some(cert_params))?;
         Ok(Self { cert })
     }
@@ -140,7 +138,7 @@ pub struct CsrEntity {
 
 impl CsrEntity {
     pub fn new(common_name: &str) -> io::Result<Self> {
-        let cert_params = default_params(Some(common_name.to_string()), false)?;
+        let cert_params = default_params(None, Some(common_name.to_string()), false)?;
         let (cert, csr_pem) = generate_csr(cert_params)?;
         Ok(Self { cert, csr_pem })
     }
@@ -267,8 +265,8 @@ fn test_csr() {
         ca_cert_path.to_string(),
     ];
     let openssl_cmd = Command::new("openssl")
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
         .args(openssl_args)
         .spawn()
         .unwrap();
@@ -301,8 +299,8 @@ fn test_csr() {
         csr_cert_path.to_string(),
     ];
     let openssl_cmd = Command::new("openssl")
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
         .args(openssl_args)
         .spawn()
         .unwrap();
@@ -337,8 +335,8 @@ fn test_csr() {
         issued_cert_path.to_string(),
     ];
     let openssl_cmd = Command::new("openssl")
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
         .args(openssl_args)
         .spawn()
         .unwrap();
@@ -376,7 +374,7 @@ pub fn generate(params: Option<CertificateParams>) -> io::Result<Certificate> {
     let cert_params = if let Some(p) = params {
         p
     } else {
-        default_params(None, false)?
+        default_params(None, None, false)?
     };
     Certificate::from_params(cert_params).map_err(|e| {
         Error::new(
@@ -409,9 +407,7 @@ pub fn generate_and_write_pem(
     key_path: &str,
     cert_path: &str,
 ) -> io::Result<()> {
-    log::info!(
-        "generating cert with key path '{key_path}' and cert path '{cert_path}' (PEM format)"
-    );
+    log::info!("generating key '{key_path}', cert '{cert_path}' (PEM format)");
     if Path::new(key_path).exists() {
         return Err(Error::new(
             ErrorKind::Other,
@@ -462,84 +458,88 @@ pub fn load_pem_to_vec(key_path: &str, cert_path: &str) -> io::Result<(Vec<u8>, 
         ));
     }
 
-    let key_contents = read_vec(key_path)?;
-    let cert_contents = read_vec(cert_path)?;
-
-    Ok((key_contents, cert_contents))
+    Ok((read_vec(key_path)?, read_vec(cert_path)?))
 }
 
-/// Creates default certificate parameters.
-#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
-pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<CertificateParams> {
-    let mut cert_params = CertificateParams::default();
-
-    // this fails peer IP verification (e.g., incorrect signature)
-    // cert_params.alg = &rcgen::PKCS_ECDSA_P384_SHA384;
-    //
-    // currently, "avalanchego" only signs the IP with "crypto.SHA256"
-    // ref. "avalanchego/network/ip_signer.go.newIPSigner"
-    // ref. "avalanchego/network/peer/ip.go UnsignedIP.Sign" with "crypto.SHA256"
-    //
-    // TODO: support sha384/512 signatures in avalanchego node
-    log::info!("generating PKCS_ECDSA_P256_SHA256 key");
-    cert_params.alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-
-    let key_pair = KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(|e| {
-        Error::new(
-            ErrorKind::Other,
-            format!("failed to generate key pair {}", e),
-        )
-    })?;
-    cert_params.key_pair = Some(key_pair);
-
-    cert_params.not_before = date_time_ymd(2023, 4, 28);
-    cert_params.not_after = date_time_ymd(5000, 1, 1);
-
-    cert_params.distinguished_name = DistinguishedName::new();
-    cert_params
-        .distinguished_name
-        .push(DnType::CountryName, "US");
-    cert_params
-        .distinguished_name
-        .push(DnType::StateOrProvinceName, "NY");
-    cert_params
-        .distinguished_name
-        .push(DnType::OrganizationName, "Test Org");
-    if let Some(cm) = &common_name {
-        cert_params
-            .distinguished_name
-            .push(DnType::CommonName, cm.to_string());
-    } else {
-        cert_params
-            .distinguished_name
-            .push(DnType::CommonName, "test common name");
-    }
-
-    if is_ca {
-        cert_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    }
-
-    Ok(cert_params)
-}
-
-/// Creates default certificate parameters.
 /// Use RSA for Apple M*.
 /// ref. <https://github.com/sfackler/rust-native-tls/issues/225>
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-pub fn default_params(common_name: Option<String>, is_ca: bool) -> io::Result<CertificateParams> {
+fn default_sig_algo() -> String {
+    "PKCS_RSA_SHA256".to_string()
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+fn default_sig_algo() -> String {
+    "PKCS_ECDSA_P256_SHA256".to_string()
+}
+
+pub fn default_params(
+    sig_algo: Option<String>,
+    common_name: Option<String>,
+    is_ca: bool,
+) -> io::Result<CertificateParams> {
     let mut cert_params = CertificateParams::default();
 
-    log::info!("generating PKCS_RSA_SHA256 key");
-    cert_params.alg = &rcgen::PKCS_RSA_SHA256;
+    let sa = if let Some(sg) = &sig_algo {
+        sg.to_string()
+    } else {
+        default_sig_algo()
+    };
+    log::info!("generating parameter with signature algorithm '{sa}'");
 
-    let mut rng = rand::thread_rng();
-    let private_key = RsaPrivateKey::new(&mut rng, 2048)
-        .map_err(|e| Error::new(ErrorKind::Other, format!("failed to generate key {}", e)))?;
-    let key = private_key
-        .to_pkcs8_pem(LineEnding::CRLF)
-        .map_err(|e| Error::new(ErrorKind::Other, format!("failed to convert key {}", e)))?;
-    let key_pair = KeyPair::from_pem(&key)
-        .map_err(|e| Error::new(ErrorKind::Other, format!("failed to create key pair {}", e)))?;
+    let key_pair = match sa.as_str() {
+        "PKCS_RSA_SHA256" => {
+            cert_params.alg = &rcgen::PKCS_RSA_SHA256;
+            let mut rng = rand::thread_rng();
+            let private_key = RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
+                Error::new(ErrorKind::Other, format!("failed to generate key {}", e))
+            })?;
+            let key = private_key.to_pkcs8_pem(LineEnding::CRLF).map_err(|e| {
+                Error::new(ErrorKind::Other, format!("failed to convert key {}", e))
+            })?;
+            KeyPair::from_pem(&key).map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("failed to generate PKCS_RSA_SHA256 key pair {}", e),
+                )
+            })?
+        }
+
+        // this works on linux with avalanchego
+        "PKCS_ECDSA_P256_SHA256" => {
+            cert_params.alg = &rcgen::PKCS_ECDSA_P256_SHA256;
+            KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("failed to generate PKCS_ECDSA_P256_SHA256 key pair {}", e),
+                )
+            })?
+        }
+
+        // this fails avalanchego peer IP verification (e.g., incorrect signature)
+        //
+        // currently, "avalanchego" only signs the IP with "crypto.SHA256"
+        // ref. "avalanchego/network/ip_signer.go.newIPSigner"
+        // ref. "avalanchego/network/peer/ip.go UnsignedIP.Sign" with "crypto.SHA256"
+        //
+        // TODO: support sha384/512 signatures in avalanchego node
+        "PKCS_ECDSA_P384_SHA384" => {
+            cert_params.alg = &rcgen::PKCS_ECDSA_P384_SHA384;
+            KeyPair::generate(&rcgen::PKCS_ECDSA_P384_SHA384).map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("failed to generate PKCS_ECDSA_P384_SHA384 key pair {}", e),
+                )
+            })?
+        }
+
+        _ => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("unknown signature algorithm {sa}"),
+            ))
+        }
+    };
     cert_params.key_pair = Some(key_pair);
 
     cert_params.not_before = date_time_ymd(2023, 4, 28);
@@ -617,8 +617,8 @@ fn test_pem() {
         "-noout".to_string(),
     ];
     let openssl_cmd = Command::new("openssl")
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
         .args(openssl_args)
         .spawn()
         .unwrap();
@@ -806,7 +806,7 @@ pub fn generate_der(
     let cert_params = if let Some(p) = params {
         p
     } else {
-        default_params(None, false)?
+        default_params(None, None, false)?
     };
     let cert = Certificate::from_params(cert_params).map_err(|e| {
         Error::new(
