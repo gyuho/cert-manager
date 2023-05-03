@@ -1,6 +1,6 @@
 [package]
 name = "cert-manager"
-version = "0.0.7" # https://crates.io/crates/cert-manager
+version = "0.0.8" # https://crates.io/crates/cert-manager
 
 edition = "2021"
 rust-version = "1.69"

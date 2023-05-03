@@ -542,7 +542,7 @@ pub fn default_params(
     };
     cert_params.key_pair = Some(key_pair);
 
-    cert_params.not_before = date_time_ymd(2023, 4, 28);
+    cert_params.not_before = date_time_ymd(2023, 5, 1);
     cert_params.not_after = date_time_ymd(5000, 1, 1);
 
     cert_params.distinguished_name = DistinguishedName::new();
