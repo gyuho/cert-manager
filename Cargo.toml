@@ -1,6 +1,6 @@
 [package]
 name = "cert-manager"
-version = "0.0.8" # https://crates.io/crates/cert-manager
+version = "0.0.9" # https://crates.io/crates/cert-manager
 
 edition = "2021"
 rust-version = "1.69"
@@ -15,7 +15,7 @@ log = "0.4.17"
 rand = "0.8.5"
 random-manager = "0.0.5" # https://crates.io/crates/random-manager/versions
 rcgen = { version = "0.10.0", features = ["pem", "x509-parser"] } # https://github.com/est31/rcgen
-rsa = { version = "0.9.0", features = ["pem"] } # https://crates.io/crates/rsa
+rsa = { version = "0.9.1", features = ["pem"] } # https://crates.io/crates/rsa
 rustls = "0.21.1" # https://github.com/rustls/rustls/tags
 rustls-pemfile = "1.0.2" # https://github.com/rustls/pemfile
 x509-parser = "0.15.0"
